@@ -22,6 +22,23 @@ command -v brew && echo "OK" || echo "MISSING"
 
 如果 fswatch 缺失且 brew 可用，install.sh 会自动安装。否则提示用户先安装 Homebrew。
 
+### macOS Full Disk Access（iCloud 用户必读）
+
+如果 Obsidian Vault 通过 **iCloud Drive** 同步（路径含 `~/Library/Mobile Documents/`），Diff 追踪功能需要 `/bin/bash` 拥有 **完全磁盘访问权限**。
+
+iCloud Drive 目录受 macOS TCC (Transparency, Consent, and Control) 保护，`launchd` 启动的进程默认无权读取这些文件的**内容**（文件变更事件检测不受影响，这是内核级 FSEvents API）。
+
+**操作步骤：**
+1. 打开 **系统设置 > 隐私与安全性 > 完全磁盘访问权限**
+2. 点击 "+" → 按 `Cmd+Shift+G` → 输入 `/bin/bash` → 添加
+3. 重新启动 vault-watcher 服务
+
+**症状：** 如果未授权，文件变更通知正常推送（显示文件名列表），但 Diff 详情区域始终为空。日志中可能出现 `WARN: shadow update failed`。
+
+**安全影响：** 授权 `/bin/bash` 意味着所有 bash 脚本获得完全磁盘访问权限。对个人 Mac 来说风险可接受。如果在意，可改为将 vault 放在非 iCloud 路径（如 `~/Documents/ObsidianVault`）。
+
+install.sh 会自动检测 iCloud 路径并提示用户授权。
+
 ## 配置收集清单
 
 按顺序向用户收集以下信息。每一步都应有默认值建议。

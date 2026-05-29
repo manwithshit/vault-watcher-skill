@@ -91,3 +91,4 @@ cat ~/.vault-watcher/vault-notify.py 2>/dev/null | grep APP_ID
 - fswatch（`brew install fswatch`）
 - Python 3（macOS 自带）
 - 飞书/Lark 自建应用（`im:message` 权限）
+- **Full Disk Access**（仅 iCloud 同步的 vault 需要）：`/bin/bash` 需在 系统设置 > 隐私与安全性 > 完全磁盘访问权限 中授权，否则 Diff 追踪功能无法读取文件内容。详见 `references/setup-guide.md`。
