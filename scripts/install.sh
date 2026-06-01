@@ -102,10 +102,60 @@ LOCK_FILE="/tmp/vault-watcher.lock"
 LOG_FILE="${LOG_DIR}/vault-watcher.log"
 SNAPSHOT_FILE="${LOG_DIR}/vault-watcher-snapshot.txt"
 DIFF_OUTPUT="/tmp/vault-watcher-diff.txt"
+HEARTBEAT_FILE="/tmp/vault-watcher-heartbeat"
+NOTIFY_TIMEOUT=30
+WATCHDOG_MAX_SILENCE=900
 
 mkdir -p "$LOG_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+run_with_timeout() {
+  local secs=$1; shift
+  "$@" &
+  local cmd_pid=$!
+  ( sleep "$secs" && kill "$cmd_pid" 2>/dev/null ) &
+  local timer_pid=$!
+  wait "$cmd_pid" 2>/dev/null
+  local rc=$?
+  kill "$timer_pid" 2>/dev/null
+  wait "$timer_pid" 2>/dev/null
+  return $rc
+}
+
+cleanup() {
+  log "vault-watcher shutting down (PID $$)"
+  [ -n "$FSWATCH_PID" ] && kill "$FSWATCH_PID" 2>/dev/null
+  [ -n "$WATCHDOG_PID" ] && kill "$WATCHDOG_PID" 2>/dev/null
+  rm -f "$HEARTBEAT_FILE" /tmp/vault-watcher-flush.pid "$FSWATCH_FIFO"
+  rmdir "$LOCK_FILE" 2>/dev/null
+  exit "${1:-0}"
+}
+trap 'cleanup 1' INT TERM
+trap 'cleanup $?' EXIT
+
+touch_heartbeat() { touch "$HEARTBEAT_FILE"; }
+
+watchdog_loop() {
+  while true; do
+    sleep 60
+    if [ ! -f "$HEARTBEAT_FILE" ]; then
+      log "WATCHDOG: heartbeat file missing, exiting"; kill $$ 2>/dev/null; exit 1
+    fi
+    local now hb_time age
+    now=$(date +%s)
+    hb_time=$(stat -f %m "$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+    age=$((now - hb_time))
+    if [ "$age" -gt "$WATCHDOG_MAX_SILENCE" ]; then
+      log "WATCHDOG: no event for ${age}s (threshold=${WATCHDOG_MAX_SILENCE}s), killing main"
+      kill $$ 2>/dev/null; exit 1
+    fi
+    if [ -n "$FSWATCH_PID" ] && ! kill -0 "$FSWATCH_PID" 2>/dev/null; then
+      log "WATCHDOG: fswatch (PID $FSWATCH_PID) is dead, killing main"
+      kill $$ 2>/dev/null; exit 1
+    fi
+  done
+}
 
 should_ignore() {
   local path="$1"
@@ -188,9 +238,11 @@ flush_batch() {
   local diff_arg=""
   [ -f "$DIFF_OUTPUT" ] && [ -s "$DIFF_OUTPUT" ] && diff_arg="$DIFF_OUTPUT"
 
-  python3 "$NOTIFY_SCRIPT" "$title" "[${new_items}]" "[${modified_items}]" "[${archived_items}]" "[${deleted_items}]" "$diff_arg" 2>> "$LOG_FILE" && \
-    log "Pushed: ${total} (new=${new_count} mod=${modified_count} arch=${archived_count} del=${deleted_count} diff=${diff_triggered})" || \
-    log "ERROR: notify failed"
+  if run_with_timeout "$NOTIFY_TIMEOUT" python3 "$NOTIFY_SCRIPT" "$title" "[${new_items}]" "[${modified_items}]" "[${archived_items}]" "[${deleted_items}]" "$diff_arg" 2>> "$LOG_FILE"; then
+    log "Pushed: ${total} (new=${new_count} mod=${modified_count} arch=${archived_count} del=${deleted_count} diff=${diff_triggered})"
+  else
+    log "ERROR: notify failed or timed out (timeout=${NOTIFY_TIMEOUT}s)"
+  fi
   rm -f "$DIFF_OUTPUT"
 }
 
@@ -199,7 +251,7 @@ process_path() {
   echo "$path" >> "$BATCH_FILE"
 }
 
-log "vault-watcher started. Watching: ${WATCH_DIRS[*]}"
+log "vault-watcher started (PID $$). Watching: ${WATCH_DIRS[*]}"
 
 if [ ! -f "$SNAPSHOT_FILE" ] || [ ! -s "$SNAPSHOT_FILE" ]; then
   log "Building initial file snapshot..."
@@ -214,18 +266,40 @@ if [ -n "$DIFF_TARGET" ] && [ ! -f "$DIFF_SHADOW" ] && [ -f "$DIFF_TARGET" ]; th
   log "Diff shadow initialized for: $(basename "$DIFF_TARGET")"
 fi
 
+# Clean stale lock from previous crash
+[ -d "$LOCK_FILE" ] && { log "Removing stale lock"; rmdir "$LOCK_FILE" 2>/dev/null; }
+
+touch_heartbeat
+
+# Start fswatch via named FIFO (avoids pipe-subshell hang)
+FSWATCH_FIFO="/tmp/vault-watcher-fifo.$$"
+rm -f "$FSWATCH_FIFO"; mkfifo "$FSWATCH_FIFO"
+
 FSWATCH_BIN=$(command -v fswatch || echo /opt/homebrew/bin/fswatch)
 "$FSWATCH_BIN" --recursive --latency 8 \
   --exclude '\.icloud$' --exclude '~$' --exclude '\.tmp$' \
   --exclude '\.DS_Store' --exclude '/\.' \
-  "${WATCH_DIRS[@]}" | while IFS= read -r path; do
+  "${WATCH_DIRS[@]}" > "$FSWATCH_FIFO" &
+FSWATCH_PID=$!
+log "fswatch started (PID $FSWATCH_PID)"
+
+watchdog_loop &
+WATCHDOG_PID=$!
+log "watchdog started (PID $WATCHDOG_PID, threshold=${WATCHDOG_MAX_SILENCE}s)"
+
+while IFS= read -r path; do
+  touch_heartbeat
   if [ -n "$path" ]; then
     process_path "$path"
     [ -f /tmp/vault-watcher-flush.pid ] && kill "$(cat /tmp/vault-watcher-flush.pid)" 2>/dev/null || true
     ( sleep "$DEBOUNCE_SEC" && flush_batch ) &
     echo $! > /tmp/vault-watcher-flush.pid
   fi
-done
+done < "$FSWATCH_FIFO"
+
+log "ERROR: event loop exited unexpectedly (fswatch may have died)"
+rm -f "$FSWATCH_FIFO"
+cleanup 1
 WATCHER_BODY
 
 chmod +x "$INSTALL_DIR/vault-watcher.sh"
