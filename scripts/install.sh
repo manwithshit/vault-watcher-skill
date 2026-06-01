@@ -192,45 +192,87 @@ flush_batch() {
   local tmp_sorted="/tmp/vault-watcher-sorted.txt"
   sort -u "$BATCH_FILE" > "$tmp_sorted"; rm -f "$BATCH_FILE"
 
-  local new_items="" modified_items="" archived_items="" deleted_items=""
-  local new_count=0 modified_count=0 archived_count=0 deleted_count=0
-  local diff_triggered=0
+  local tmp_new="/tmp/vault-watcher-new.txt"
+  local tmp_del="/tmp/vault-watcher-del.txt"
+  rm -f "$tmp_new" "$tmp_del"
+
+  local modified_items="" archived_items=""
+  local modified_count=0 archived_count=0 diff_triggered=0
 
   while IFS= read -r full_path; do
     [ -z "$full_path" ] && continue; [ -d "$full_path" ] && continue
-    local rel; rel=$(relative_path "$full_path")
     local base; base="$(basename "$full_path")"
 
     if [ -e "$full_path" ]; then
       if [ -f "$SNAPSHOT_FILE" ] && grep -qF "$full_path" "$SNAPSHOT_FILE"; then
         modified_count=$((modified_count + 1))
+        local rel; rel=$(relative_path "$full_path")
         [ -z "$modified_items" ] && modified_items="\"${rel}\"" || modified_items="${modified_items},\"${rel}\""
         [ "$full_path" = "$DIFF_TARGET" ] && diff_triggered=1
       else
-        new_count=$((new_count + 1))
-        [ -z "$new_items" ] && new_items="\"${rel}\"" || new_items="${new_items},\"${rel}\""
+        echo "$full_path" >> "$tmp_new"
         echo "$full_path" >> "$SNAPSHOT_FILE"
       fi
     elif [ -e "${ARCHIVE_DIR}/${base}" ]; then
       archived_count=$((archived_count + 1))
+      local rel; rel=$(relative_path "$full_path")
       local src_dir; src_dir=$(dirname "$rel")
       [ -z "$archived_items" ] && archived_items="\"${base}|${src_dir}\"" || archived_items="${archived_items},\"${base}|${src_dir}\""
-      if [ -f "$SNAPSHOT_FILE" ]; then
-        grep -vF "$full_path" "$SNAPSHOT_FILE" > "${SNAPSHOT_FILE}.tmp" 2>/dev/null
-        mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE" 2>/dev/null
-      fi
+      [ -f "$SNAPSHOT_FILE" ] && { grep -vF "$full_path" "$SNAPSHOT_FILE" > "${SNAPSHOT_FILE}.tmp" 2>/dev/null; mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE" 2>/dev/null; }
     else
-      deleted_count=$((deleted_count + 1))
-      [ -z "$deleted_items" ] && deleted_items="\"${rel}\"" || deleted_items="${deleted_items},\"${rel}\""
-      if [ -f "$SNAPSHOT_FILE" ]; then
-        grep -vF "$full_path" "$SNAPSHOT_FILE" > "${SNAPSHOT_FILE}.tmp" 2>/dev/null
-        mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE" 2>/dev/null
-      fi
+      echo "$full_path" >> "$tmp_del"
+      [ -f "$SNAPSHOT_FILE" ] && { grep -vF "$full_path" "$SNAPSHOT_FILE" > "${SNAPSHOT_FILE}.tmp" 2>/dev/null; mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE" 2>/dev/null; }
     fi
   done < "$tmp_sorted"
+  rm -f "$tmp_sorted"
 
-  rm -f "$tmp_sorted"; rmdir "$LOCK_FILE" 2>/dev/null
-  local total=$((new_count + modified_count + archived_count + deleted_count))
+  # Rename detection
+  local renamed_items="" renamed_count=0
+  local new_items="" new_count=0 deleted_items="" deleted_count=0
+
+  if [ -f "$tmp_new" ] && [ -f "$tmp_del" ]; then
+    local matched_new="/tmp/vw-mn.txt" matched_del="/tmp/vw-md.txt"
+    rm -f "$matched_new" "$matched_del"
+    while IFS= read -r np; do
+      local nd ne; nd=$(dirname "$np"); ne="${np##*.}"
+      local fm=""
+      while IFS= read -r dp; do
+        [ -f "$matched_del" ] && grep -qxF "$dp" "$matched_del" && continue
+        local dd de; dd=$(dirname "$dp"); de="${dp##*.}"
+        [ "$nd" = "$dd" ] && [ "$ne" = "$de" ] && { fm="$dp"; break; }
+      done < "$tmp_del"
+      if [ -n "$fm" ]; then
+        echo "$np" >> "$matched_new"; echo "$fm" >> "$matched_del"
+        renamed_count=$((renamed_count + 1))
+        local on nn rd; on=$(basename "$fm"); nn=$(basename "$np"); rd=$(relative_path "$(dirname "$np")")
+        [ -z "$renamed_items" ] && renamed_items="\"${on}|${nn}|${rd}\"" || renamed_items="${renamed_items},\"${on}|${nn}|${rd}\""
+      fi
+    done < "$tmp_new"
+    while IFS= read -r np; do
+      [ -f "$matched_new" ] && grep -qxF "$np" "$matched_new" && continue
+      new_count=$((new_count + 1)); local rel; rel=$(relative_path "$np")
+      [ -z "$new_items" ] && new_items="\"${rel}\"" || new_items="${new_items},\"${rel}\""
+    done < "$tmp_new"
+    while IFS= read -r dp; do
+      [ -f "$matched_del" ] && grep -qxF "$dp" "$matched_del" && continue
+      deleted_count=$((deleted_count + 1)); local rel; rel=$(relative_path "$dp")
+      [ -z "$deleted_items" ] && deleted_items="\"${rel}\"" || deleted_items="${deleted_items},\"${rel}\""
+    done < "$tmp_del"
+    rm -f "$matched_new" "$matched_del"
+  else
+    [ -f "$tmp_new" ] && while IFS= read -r np; do
+      new_count=$((new_count + 1)); local rel; rel=$(relative_path "$np")
+      [ -z "$new_items" ] && new_items="\"${rel}\"" || new_items="${new_items},\"${rel}\""
+    done < "$tmp_new"
+    [ -f "$tmp_del" ] && while IFS= read -r dp; do
+      deleted_count=$((deleted_count + 1)); local rel; rel=$(relative_path "$dp")
+      [ -z "$deleted_items" ] && deleted_items="\"${rel}\"" || deleted_items="${deleted_items},\"${rel}\""
+    done < "$tmp_del"
+  fi
+  rm -f "$tmp_new" "$tmp_del"
+
+  rmdir "$LOCK_FILE" 2>/dev/null
+  local total=$((new_count + modified_count + archived_count + deleted_count + renamed_count))
   [ $total -eq 0 ] && return
 
   [ $diff_triggered -eq 1 ] && generate_diff
@@ -238,8 +280,8 @@ flush_batch() {
   local diff_arg=""
   [ -f "$DIFF_OUTPUT" ] && [ -s "$DIFF_OUTPUT" ] && diff_arg="$DIFF_OUTPUT"
 
-  if run_with_timeout "$NOTIFY_TIMEOUT" python3 "$NOTIFY_SCRIPT" "$title" "[${new_items}]" "[${modified_items}]" "[${archived_items}]" "[${deleted_items}]" "$diff_arg" 2>> "$LOG_FILE"; then
-    log "Pushed: ${total} (new=${new_count} mod=${modified_count} arch=${archived_count} del=${deleted_count} diff=${diff_triggered})"
+  if run_with_timeout "$NOTIFY_TIMEOUT" python3 "$NOTIFY_SCRIPT" "$title" "[${new_items}]" "[${modified_items}]" "[${archived_items}]" "[${deleted_items}]" "[${renamed_items}]" "$diff_arg" 2>> "$LOG_FILE"; then
+    log "Pushed: ${total} (new=${new_count} mod=${modified_count} arch=${archived_count} del=${deleted_count} ren=${renamed_count} diff=${diff_triggered})"
   else
     log "ERROR: notify failed or timed out (timeout=${NOTIFY_TIMEOUT}s)"
   fi
@@ -356,11 +398,20 @@ def format_diff_section(dd, label="tracked file"):
         if dd["removed_count"] > 4: parts.append(f"  …及另 {dd['removed_count'] - 4} 行")
     return "\n".join(parts)
 
-def build_card(title, new, mod, arch, deleted, dd=None):
+def build_card(title, new, mod, arch, deleted, renamed=None, dd=None):
     elems, n = [], 0
+    if renamed:
+        lines = []
+        for i in renamed[:6]:
+            parts = i.split("|", 2)
+            if len(parts) == 3: lines.append(f"• `{parts[0]}`\n  ↳ → `{parts[1]}`")
+            else: lines.append(f"• `{i}`")
+        len(renamed) > 6 and lines.append(f"• ...及另 {len(renamed)-6} 个")
+        elems.append({"tag": "markdown", "content": f"**🔄 Renamed ({len(renamed)})**\n" + "\n".join(lines)}); n += 1
     if new:
         lines = [f"• `{f}`" for f in new[:6]]
         len(new) > 6 and lines.append(f"• ...及另 {len(new)-6} 个")
+        n > 0 and elems.append({"tag": "hr"})
         elems.append({"tag": "markdown", "content": f"**➕ New ({len(new)})**\n" + "\n".join(lines)}); n += 1
     if mod:
         lines = [f"• `{f}`" for f in mod[:6]]
@@ -386,10 +437,10 @@ def build_card(title, new, mod, arch, deleted, dd=None):
     elems.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"⏱️ {datetime.now().strftime('%H:%M:%S')} · Vault Watcher · launchd"}]})
     return {"header": {"title": {"tag": "plain_text", "content": title}, "template": "wathet"}, "elements": elems}
 
-def send(title, new, mod, arch, deleted, dd=None):
+def send(title, new, mod, arch, deleted, renamed=None, dd=None):
     token = get_token()
     if not token: print("ERROR: no token", file=sys.stderr); return False
-    card = build_card(title, new, mod, arch, deleted, dd)
+    card = build_card(title, new, mod, arch, deleted, renamed, dd)
     payload = {"receive_id": CHAT_ID, "msg_type": "interactive", "content": json.dumps(card)}
     req = urllib.request.Request(
         f"{API_BASE}/open-apis/im/v1/messages?receive_id_type=chat_id",
@@ -406,9 +457,10 @@ if __name__ == "__main__":
     mod = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else []
     arch = json.loads(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else []
     deleted = json.loads(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else []
-    dp = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
+    renamed = json.loads(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else []
+    dp = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else None
     dd = parse_diff(dp) if dp else None
-    ok = send(title, new, mod, arch, deleted, dd)
+    ok = send(title, new, mod, arch, deleted, renamed, dd)
     sys.exit(0 if ok else 1)
 NOTIFY_BODY
 
