@@ -26,17 +26,15 @@ Vault Watcher 就是为了解决这个问题：
 ## 🚀 AI 一键安装
 
 > [!TIP]
-> **复制下面这段话，直接发给你的 AI Agent（Claude Code / Cursor / Codex 等），它会自动帮你完成全部安装和配置。**
->
-> ```
-> 帮我安装 vault-watcher。
-> 这是一个 Obsidian 笔记库文件变更监控工具，会把变更推送到飞书群。
-> 项目地址：https://github.com/manwithshit/vault-watcher
-> 请引导我完成配置（vault 路径、监控目录、飞书凭证），然后一键部署。
-> ```
->
-> 如果你的 Agent 已安装了 vault-watcher skill，它会自动识别并进入引导式安装流程。
-> 如果没有安装 skill，把上面这段话发给它，它也能参照 README 手动完成安装。
+> 把下面这段话复制给你的 AI（Claude Code / Cursor / Codex），剩下的它全搞定。
+
+```text
+帮我安装 vault-watcher。
+项目在 github.com/manwithshit/vault-watcher-skill
+请引导我完成配置（vault 路径、监控目录、飞书凭证），然后一键部署。
+```
+
+没装过 skill 也没关系——AI 会参照项目说明自动完成安装。
 
 ---
 

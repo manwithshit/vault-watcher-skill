@@ -21,17 +21,16 @@ Vault Watcher monitors your Obsidian vault and sends structured Feishu/Lark card
 ## 🚀 AI One-Click Install
 
 > [!TIP]
-> **Copy the prompt below and send it to your AI Agent (Claude Code / Cursor / Codex, etc.) — it will guide you through the entire installation.**
->
-> ```
-> Install vault-watcher for me.
-> It's an Obsidian vault file change monitor that pushes notifications to Feishu/Lark.
-> Project: https://github.com/manwithshit/vault-watcher-skill
-> Guide me through the configuration (vault path, watch directories, Feishu credentials),
-> then deploy it.
-> ```
->
-> If your agent has the vault-watcher skill installed, it will automatically enter the guided setup flow.
+> Copy the prompt below and send it to your AI (Claude Code / Cursor / Codex) — it handles everything.
+
+```text
+Install vault-watcher for me.
+Project: github.com/manwithshit/vault-watcher-skill
+Guide me through the configuration (vault path, watch directories, Feishu credentials),
+then deploy it.
+```
+
+No skill pre-installed? No problem — the AI will follow the project docs and set it up for you.
 
 ---
 
