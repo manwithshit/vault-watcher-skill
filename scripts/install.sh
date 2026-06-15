@@ -161,10 +161,12 @@ should_ignore() {
   local path="$1"
   case "$path" in
     *.icloud) return 0 ;; *~) return 0 ;; *.tmp) return 0 ;;
+    *.tmp.*) return 0 ;; *.swp) return 0 ;; *.swo) return 0 ;;
+    *.bak) return 0 ;; *.backup) return 0 ;;
     */.DS_Store) return 0 ;; */.obsidian/*) return 0 ;;
   esac
   local base; base="$(basename "$path")"
-  case "$base" in .*) return 0 ;; esac
+  case "$base" in .*) return 0 ;; ~\$*) return 0 ;; esac
   return 1
 }
 
@@ -320,7 +322,8 @@ rm -f "$FSWATCH_FIFO"; mkfifo "$FSWATCH_FIFO"
 FSWATCH_BIN=$(command -v fswatch || echo /opt/homebrew/bin/fswatch)
 "$FSWATCH_BIN" --recursive --latency 8 \
   --exclude '\.icloud$' --exclude '~$' --exclude '\.tmp$' \
-  --exclude '\.DS_Store' --exclude '/\.' \
+  --exclude '\.tmp\.' --exclude '\.swp$' --exclude '\.swo$' \
+  --exclude '\.bak$' --exclude '\.DS_Store' --exclude '/\.' \
   "${WATCH_DIRS[@]}" > "$FSWATCH_FIFO" &
 FSWATCH_PID=$!
 log "fswatch started (PID $FSWATCH_PID)"
